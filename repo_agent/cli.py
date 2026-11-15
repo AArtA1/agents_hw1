@@ -140,17 +140,51 @@ def cmd_review(args):
 
     idx = _load(args)
     llm = _llm(args)
+    from .issues import IssuesError
     try:
-        rep = review_commit(idx, llm, args.commit) if args.commit else review_repo(idx, llm, files=args.files, top=args.top)
-    except LLMError as e:
+        if args.pr:
+            from .github_pr import review_pr
+            rep = review_pr(idx, llm, args.pr)
+        elif args.commit:
+            rep = review_commit(idx, llm, args.commit)
+        else:
+            rep = review_repo(idx, llm, files=args.files, top=args.top)
+    except (LLMError, IssuesError) as e:
         sys.exit(f"Ошибка: {e}")
-    name = f"review_{args.commit[:10]}" if args.commit else "review"
+    name = f"review_pr{args.pr}" if args.pr else (f"review_{args.commit[:10]}" if args.commit else "review")
     (_out_dir(idx) / f"{name}.json").write_text(json.dumps(rep, ensure_ascii=False, indent=2))
     md = report_markdown(rep, idx, min_severity=args.min_severity)
     (_out_dir(idx) / f"{name}.md").write_text(md)
     print(md)
     if llm:
         print(f"\nusage: {llm.usage}", file=sys.stderr)
+    if args.pr:
+        _maybe_post_pr_review(rep, args.post)
+
+
+def _maybe_post_pr_review(rep: dict, post: bool) -> None:
+    """Comments go to GitHub only with --post AND an explicit human 'y' (outward-facing action)."""
+    from .github_pr import post_review
+    from .issues import IssuesError
+    pr = rep["pr"]
+    print(f"\nКомментарии к PR #{pr['number']} ({len(rep['comments'])}):", file=sys.stderr)
+    for c in rep["comments"]:
+        print(f"  {c['path']}:{c['line']}  {c['body'].splitlines()[0]}", file=sys.stderr)
+    if not post:
+        print("Это предпросмотр. Опубликовать на GitHub: добавьте --post (нужен GITHUB_TOKEN).", file=sys.stderr)
+        return
+    if not rep["comments"]:
+        print("Публиковать нечего.", file=sys.stderr)
+        return
+    preview = (f"Куда: ПУБЛИЧНО на GitHub, {pr['owner']}/{pr['name']} PR #{pr['number']} (от вашего имени)\n"
+               f"Комментариев: {len(rep['comments'])}")
+    if not _confirm_tty("post_pr_review", {}, preview):
+        print("Отклонено — ничего не опубликовано.", file=sys.stderr)
+        return
+    try:
+        print(f"Опубликовано: {post_review(rep)}")
+    except IssuesError as e:
+        print(f"Не удалось опубликовать: {e}", file=sys.stderr)
 
 
 def cmd_eval_qa(args):
@@ -263,6 +297,8 @@ def main(argv=None):
     p.add_argument("--no-llm", action="store_true", help=argparse.SUPPRESS)
     p = add("review", cmd_review, "ревью: баги и безопасность")
     p.add_argument("--commit", help="ревью конкретного коммита (SHA)")
+    p.add_argument("--pr", type=int, help="ревью pull request с GitHub по номеру")
+    p.add_argument("--post", action="store_true", help="опубликовать комментарии в PR (после подтверждения [y/N])")
     p.add_argument("--files", nargs="*", help="файлы для LLM-ревью (по умолчанию — самые рискованные)")
     p.add_argument("--top", type=int, default=8, help="сколько файлов отдавать LLM")
     p.add_argument("--min-severity", default="low", choices=["critical", "high", "medium", "low"])

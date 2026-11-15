@@ -292,3 +292,28 @@ def test_hybrid_search_fuses_vector_ranking(demo_index, monkeypatch):
     demo_index.vectors = fake
     hits = demo_index.search("zzz unknown words", k=3)
     assert hits and hits[0].chunk.path == "demo/cli.py"   # BM25 finds nothing; vectors still help
+
+
+def test_pr_review_comments_only_on_diff_lines_and_post_needs_token(demo_index, monkeypatch):
+    from repo_agent import github_pr
+    diff = ("diff --git a/app/db.py b/app/db.py\n--- a/app/db.py\n+++ b/app/db.py\n@@ -1,2 +1,3 @@\n"
+            " import x\n+cur.execute(\"SELECT * FROM t WHERE id=%s\" % uid)\n y = 1\n")
+    calls = []
+
+    def fake_req(url, accept="application/vnd.github+json", data=None, token=None):
+        calls.append((url, data is not None))
+        if accept.endswith("diff"):
+            return diff
+        if data is not None:
+            return {"html_url": "https://github.com/o/r/pull/5#review"}
+        return {"title": "t", "body": "b", "head": {"sha": "abc"}, "html_url": "https://github.com/o/r/pull/5"}
+    monkeypatch.setattr(github_pr, "_req", fake_req)
+    demo_index.meta["web_url"] = "https://github.com/o/r"
+    rep = github_pr.review_pr(demo_index, None, 5)
+    assert [(c["path"], c["line"]) for c in rep["comments"]] == [("app/db.py", 2)]
+    assert not any(post for _, post in calls)                      # reviewing never posts
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    with pytest.raises(Exception):
+        github_pr.post_review(rep)                                  # no token -> refuse
+    assert github_pr.post_review(rep, token="t").endswith("#review")
