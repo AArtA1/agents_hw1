@@ -317,3 +317,25 @@ def test_pr_review_comments_only_on_diff_lines_and_post_needs_token(demo_index, 
     with pytest.raises(Exception):
         github_pr.post_review(rep)                                  # no token -> refuse
     assert github_pr.post_review(rep, token="t").endswith("#review")
+
+
+def test_autofix_proposes_diff_and_applies_on_new_branch_only(demo_index):
+    import json as _json
+    from repo_agent.autofix import FixError, apply_fix, propose_fix
+    finding = {"path": "demo/util.py", "line": 7, "title": "upper bound off by one", "explanation": "x"}
+    client, _ = fake_client([text_resp(_json.dumps({"start_line": 7, "end_line": 7,
+                                                    "replacement": "    if x > hi:", "explanation": "> вместо >="}))])
+    fix = propose_fix(demo_index, LLM(client=client), finding)
+    assert "-    if x >= hi:" in fix.diff and "+    if x > hi:" in fix.diff
+    before = (demo_index.root / "demo/util.py").read_text()
+    head_branch = subprocess.run(["git", "-C", str(demo_index.root), "branch", "--show-current"],
+                                 capture_output=True, text=True).stdout.strip()
+    res = apply_fix(demo_index, fix, finding["title"])
+    assert (demo_index.root / "demo/util.py").read_text() == before            # indexed clone untouched
+    assert subprocess.run(["git", "-C", str(demo_index.root), "branch", "--show-current"],
+                          capture_output=True, text=True).stdout.strip() == head_branch
+    assert "if x > hi:" in (Path(res["worktree"]) / "demo/util.py").read_text()
+    client, _ = fake_client([text_resp(_json.dumps({"start_line": 7, "end_line": 7,
+                                                    "replacement": "    if x >>> hi:", "explanation": "bad"}))])
+    with pytest.raises(FixError):                                               # broken syntax is refused
+        propose_fix(demo_index, LLM(client=client), finding)

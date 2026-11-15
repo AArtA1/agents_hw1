@@ -187,6 +187,44 @@ def _maybe_post_pr_review(rep: dict, post: bool) -> None:
         print(f"Не удалось опубликовать: {e}", file=sys.stderr)
 
 
+def cmd_fix(args):
+    """Auto-fix one finding of the last review: propose -> show diff -> human confirms -> commit on a new branch."""
+    from .autofix import FixError, apply_fix, propose_fix
+
+    idx = _load(args)
+    rp = _out_dir(idx) / (args.report or "review.json")
+    if not rp.exists():
+        sys.exit(f"Нет отчёта {rp}. Сначала: repo-agent review {args.repo}")
+    findings = json.loads(rp.read_text())["findings"]
+    if not findings:
+        sys.exit("В отчёте нет замечаний.")
+    if args.finding is None or not (0 <= args.finding < len(findings)):
+        for i, f in enumerate(findings[:30]):
+            print(f"[{i}] {f['severity']:8} {f['path']}:{f['line']}  {f['title']}")
+        sys.exit("Выберите замечание: --finding N")
+    llm = _llm(args)
+    if llm is None:
+        sys.exit(f"Для автоисправления нужна модель ({config.API_KEY_ENV}).")
+    f = findings[args.finding]
+    print(f"Замечание: {f['path']}:{f['line']} — {f['title']}", file=sys.stderr)
+    try:
+        fix = propose_fix(idx, llm, f)
+    except (FixError, LLMError) as e:
+        sys.exit(f"Не удалось предложить исправление: {e}")
+    print(fix.diff)
+    print(f"Пояснение: {fix.explanation}")
+    preview = (f"Куда: новая ветка в отдельном worktree локального клона ({idx.slug}); текущая ветка и "
+               f"удалённый репозиторий не меняются\n\n{fix.diff}")
+    if not _confirm_tty("apply_fix", {}, preview):
+        sys.exit("Отклонено — изменения не применены.")
+    try:
+        res = apply_fix(idx, fix, f["title"])
+    except FixError as e:
+        sys.exit(f"Не удалось применить: {e}")
+    print(f"Готово: ветка {res['branch']}, коммит {res['commit']}\nworktree: {res['worktree']}\n"
+          f"Посмотреть: git -C {res['worktree']} show")
+
+
 def cmd_eval_qa(args):
     from .eval import qa
 
@@ -303,6 +341,10 @@ def main(argv=None):
     p.add_argument("--top", type=int, default=8, help="сколько файлов отдавать LLM")
     p.add_argument("--min-severity", default="low", choices=["critical", "high", "medium", "low"])
     p.add_argument("--no-llm", action="store_true", help="только статический анализ")
+    p = add("fix", cmd_fix, "автоисправление замечания ревью (с подтверждением, в новой ветке)")
+    p.add_argument("--finding", type=int, help="номер замечания из последнего отчёта ревью")
+    p.add_argument("--report", help="файл отчёта в workspace/<repo>/ (по умолчанию review.json)")
+    p.add_argument("--no-llm", action="store_true", help=argparse.SUPPRESS)
     p = add("eval-qa", cmd_eval_qa, "метрика: доля ответов с верным файлом")
     p.add_argument("--dataset", default="swe-qa",
                    help="swe-qa | stackrepoqa | coderepoqa:<файл.json[l]> | путь к JSONL {question, answer?, gold_files?}")
