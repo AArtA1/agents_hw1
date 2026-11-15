@@ -59,7 +59,8 @@ def render(idx: RepoIndex, summary: dict, mmap: dict, review: dict | None, narra
     bugs = latest_eval(idx.slug, "bugs_")
     if qa:
         m = qa["metrics"]
-        mode_label = "агент с Claude" if qa["mode"] == "agent" else "поиск BM25 без LLM (baseline)"
+        mode_label = (f"агент с LLM ({qa.get('model') or 'модель из конфига'})" if qa["mode"] == "agent"
+                      else "поиск без LLM (baseline)")
         metrics_html += (f"<h3>Вопросы-ответы: {_e(qa.get('dataset', '?'))}, {_e(mode_label)}, "
                          f"{qa['n_questions']} вопросов</h3><ul>"
                          f"<li>Доля ответов с верным файлом (первый процитированный файл — эталонный): "

@@ -233,10 +233,10 @@ with tab_chat:
 # ------------------------------------------------------------------ summary
 with tab_sum:
     s = get_summary(slug, head)
-    if llm and st.button("Сгенерировать описание (Claude)"):
-        with st.spinner("Claude пишет сводку…"):
+    if llm and st.button(f"Сгенерировать описание ({llm.model})"):
+        with st.spinner(f"{llm.model} пишет сводку…"):
             try:
-                st.session_state[f"narr_{slug}"] = narrative(idx, s)
+                st.session_state[f"narr_{slug}"] = narrative(idx, s, llm)
             except LLMError as e:
                 st.error(str(e))
     if st.session_state.get(f"narr_{slug}"):
@@ -295,8 +295,8 @@ with tab_rev:
     else:
         opts = {f"{c.sha[:10]} {c.date} — {c.subject[:80]}": c.sha for c in idx.commits[:200]}
         commit_sel = opts.get(st.selectbox("Коммит", list(opts))) if opts else None
-    st.caption("С Claude: статический анализ + LLM-ревью. Без Claude: только статические правила."
-               if llm else "Claude выключен: только статические правила.")
+    st.caption(f"С LLM ({llm.model}): статический анализ + LLM-ревью." if llm
+               else "LLM выключен: только статические правила.")
     if st.button("Запустить ревью", type="primary"):
         with st.spinner("Ревью…"):
             try:
@@ -341,7 +341,7 @@ with tab_eval:
     from repo_agent.eval import qa as qa_eval
 
     st.markdown("Метрики считаются CLI-командами (`repo-agent eval-qa`, `repo-agent eval-bugs`) или здесь. "
-                "Прогоны с Claude тратят токены: начните с небольшого лимита.")
+                "Прогоны с LLM тратят токены: начните с небольшого лимита.")
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("Доля ответов с верным файлом")
@@ -350,7 +350,7 @@ with tab_eval:
                    "Для этого репозитория нет сплита SWE-QA — используйте CLI: --dataset stackrepoqa | "
                    "coderepoqa:<файл> | свой JSONL")
         qa_mode = st.radio("Режим", ["retrieval", "agent"], horizontal=True, key="qa_mode",
-                           help="retrieval — BM25 без LLM (baseline); agent — Claude с инструментами")
+                           help="retrieval — поиск без LLM (baseline); agent — LLM с инструментами")
         qa_limit = st.number_input("Вопросов", 1, 200, 10, key="qa_limit")
         if split and st.button("Запустить QA-оценку"):
             if qa_mode == "agent" and not llm:

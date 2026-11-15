@@ -1,6 +1,6 @@
 """Automatic project summary: languages, stack, entry points, layout.
 
-Fully deterministic (works without an API key); `narrative()` optionally asks Claude
+Fully deterministic (works without an API key); `narrative()` optionally asks the configured LLM
 to turn the facts into a short human description.
 """
 
@@ -450,10 +450,10 @@ README (начало):
 """
 
 
-def narrative(idx: RepoIndex, s: dict) -> str:
+def narrative(idx: RepoIndex, s: dict, llm=None) -> str:
     from .llm import LLM  # lazy: summary must work without the SDK configured
 
     _, readme = _readme(idx)
     facts = json.dumps({k: s[k] for k in ("languages", "frameworks", "manifests", "entry_points", "layout")},
                        ensure_ascii=False)[:12000]
-    return LLM().complete(NARRATIVE_PROMPT.format(facts=facts, readme=readme[:6000]), effort="low")
+    return (llm or LLM()).complete(NARRATIVE_PROMPT.format(facts=facts, readme=readme[:6000]), effort="low")

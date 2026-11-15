@@ -102,7 +102,7 @@ def _agent(args, idx):
     from .agent import RepoAgent
     llm = _llm(args)
     if args.fault and llm is None:
-        print("⚠ --fault работает только с Claude (в режиме без LLM инструменты не вызываются). "
+        print("⚠ --fault работает только с LLM (в режиме без LLM инструменты не вызываются). "
               "Без ключа сбой и восстановление показывает: repo-agent demo <repo> --offline", file=sys.stderr)
     return RepoAgent(idx, llm, max_steps=args.max_steps, confirm=_confirm_tty, fault=args.fault)
 
@@ -302,7 +302,7 @@ def cmd_report(args):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="repo-agent", description="Ассистент по репозиторию: индекс, Q&A, карта, ревью.")
-    ap.add_argument("--model", default=None, help=f"модель Claude (по умолчанию {config.MODEL})")
+    ap.add_argument("--model", default=None, help=f"модель LLM (по умолчанию {config.MODEL}, провайдер {config.PROVIDER})")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     def add(name, fn, help_):
@@ -315,7 +315,7 @@ def main(argv=None):
 
     add("index", cmd_index, "клонировать и проиндексировать")
     p = add("summary", cmd_summary, "автосводка проекта (стек, точки входа)")
-    p.add_argument("--llm", action="store_true", help="добавить текстовое описание от Claude")
+    p.add_argument("--llm", action="store_true", help="добавить текстовое описание от LLM")
     p = add("map", cmd_map, "карта модулей (Mermaid)")
     p.add_argument("--level", choices=["auto", "file", "dir"], default="auto")
     p.add_argument("--dir-depth", type=int, default=2)
@@ -324,7 +324,7 @@ def main(argv=None):
         p = add(name, fn, h)
         if name == "ask":
             p.add_argument("question")
-        p.add_argument("--no-llm", action="store_true", help="только поиск (без Claude)")
+        p.add_argument("--no-llm", action="store_true", help="только поиск (без LLM)")
         p.add_argument("--max-steps", type=int, default=None, help=f"лимит шагов (по умолчанию {config.MAX_STEPS})")
         p.add_argument("--fault", default=None, help="симулировать сбой: <инструмент>:<timeout|error>, "
                                                        "например read_file:timeout")
