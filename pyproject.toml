@@ -1,0 +1,25 @@
+[project]
+name = "repo-agent"
+version = "0.1.0"
+description = "Ассистент по репозиторию: индекс кода и истории, Q&A со ссылками на файлы и строки, карта модулей, ревью багов и уязвимостей"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=2.8.0",
+    "streamlit>=1.67.0",
+]
+
+[project.scripts]
+repo-agent = "repo_agent.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["repo_agent"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
