@@ -337,6 +337,17 @@ def _bootstrap_diff_ci(a: list[bool], b: list[bool], iters: int = 2000, seed: in
 
 
 def _review(reviewer: LLMReviewer | None, path: str, text: str, s: int, e: int) -> list[Finding]:
+    try:
+        return _review_once(reviewer, path, text, s, e)
+    except Exception:  # model/network failure on one trial: mark it, keep evaluating
+        _ERRORS.append(path)
+        return []
+
+
+_ERRORS: list[str] = []
+
+
+def _review_once(reviewer: LLMReviewer | None, path: str, text: str, s: int, e: int) -> list[Finding]:
     if reviewer is None:  # static baseline: analyse the whole file, keep findings in the window
         found = [f for f in check_text(path, text) if s <= f.line <= e]
     else:
@@ -349,6 +360,7 @@ def run(idx, llm: LLM | None, source: str = "synthetic", n: int = 20, tol: int =
         seed: int = 13, mode: str = "snippet", progress=None) -> dict:
     trials = synthetic_trials(idx, n=n, seed=seed) if source == "synthetic" else history_trials(idx, n=n, tol=tol)
     reviewer = LLMReviewer(llm) if llm is not None else None
+    _ERRORS.clear()
     rows = []
     t0 = time.time()
     for i, t in enumerate(trials):
@@ -381,8 +393,10 @@ def run(idx, llm: LLM | None, source: str = "synthetic", n: int = 20, tol: int =
                 artifact_review(t.path, t.clean_text, t.clean_view_start, t.clean_view_end),
                 t.path, t.clean_lines or t.lines, tol)
         rows.append(row)
-    return summarize(idx.slug, source, mode, ("llm:" + llm.model) if llm else "static", tol, rows,
-                     time.time() - t0, llm.usage if llm else None)
+    res = summarize(idx.slug, source, mode, ("llm:" + llm.model) if llm else "static", tol, rows,
+                    time.time() - t0, llm.usage if llm else None)
+    res["review_errors"] = len(_ERRORS)  # reviews that failed (network/model) and were counted as "no findings"
+    return res
 
 
 def run_seeds(idx, llm: LLM | None, seeds: list[int], **kw) -> dict:
