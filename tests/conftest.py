@@ -104,3 +104,10 @@ def tool_resp(*calls):
 
 def json_resp(obj):
     return text_resp(json.dumps(obj))
+
+
+@pytest.fixture(autouse=True)
+def _bm25_by_default(monkeypatch):
+    """Tests use BM25 only (no model download); hybrid search has its own test."""
+    from repo_agent import config
+    monkeypatch.setattr(config, "SEARCH_MODE", "bm25")

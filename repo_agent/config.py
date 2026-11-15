@@ -18,6 +18,7 @@ _DEFAULTS = {
             "timeout_seconds": 120, "max_retries": 3, "fallbacks": True, "base_url": "", "api_key_env": ""},
     "agent": {"max_steps": 12, "max_tool_output_chars": 20000, "max_line_chars": 400, "tool_timeout_seconds": 20},
     "actions": {"post_to_github": False},
+    "search": {"mode": "hybrid", "embedding_model": "BAAI/bge-small-en-v1.5"},
     "demo": {"fault": ""},
 }
 
@@ -136,6 +137,8 @@ MAX_LINE_CHARS = int(SETTINGS["agent"]["max_line_chars"])
 TOOL_TIMEOUT = float(SETTINGS["agent"]["tool_timeout_seconds"])
 POST_ISSUES_TO_GITHUB = bool(SETTINGS["actions"]["post_to_github"])
 DEMO_FAULT = str(SETTINGS["demo"]["fault"] or "")
+SEARCH_MODE = SETTINGS["search"]["mode"]            # hybrid (BM25 + vectors) | bm25
+EMBEDDING_MODEL = SETTINGS["search"]["embedding_model"]
 
 # Indexing limits
 MAX_FILE_BYTES = 400_000          # skip larger files (generated / data)

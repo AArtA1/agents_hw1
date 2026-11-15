@@ -86,6 +86,7 @@ class RepoIndex:
             self._sym_by_name[s.name.lower()].append(s)
         self._bm25 = BM25([self._doc_tokens(c) for c in chunks])
         self._commit_bm25 = BM25([tokenize(f"{c.subject} {c.body} {' '.join(c.files)}") for c in commits])
+        self.vectors = None  # set by ensure_vectors() (hybrid search)
         self.issues: list[dict] = issues_mod.load_issues(slug)
         self._issue_bm25 = BM25([tokenize(f"{i['title']} {i['title']} {i['body']}") for i in self.issues])
 
@@ -129,7 +130,22 @@ class RepoIndex:
         }
         idx = cls(root, slug, chunks, symbols, commits, files, meta)
         idx.save()
+        idx.ensure_vectors(progress)
         return idx
+
+    def ensure_vectors(self, progress=None) -> bool:
+        """Load or compute chunk embeddings (hybrid search). Failure -> BM25 only, never an error."""
+        if config.SEARCH_MODE != "hybrid" or self.vectors is not None:
+            return self.vectors is not None
+        from . import vectors as vec_mod
+        try:
+            self.vectors = vec_mod.load(self.index_dir(self.slug), len(self.chunks))
+            if self.vectors is None and self.chunks:
+                self.vectors = vec_mod.build(self.chunks, self.index_dir(self.slug), progress=progress)
+        except Exception as e:  # model download / onnx problems: fall back to BM25
+            self.meta["vectors_error"] = f"{type(e).__name__}: {e}"
+            self.vectors = None
+        return self.vectors is not None
 
     # --------------------------------------------------------- persistence
     @staticmethod
@@ -169,6 +185,7 @@ class RepoIndex:
             else:
                 if kw.get("with_issues", True) and not idx.issues and idx.meta.get("web_url"):
                     idx.refresh_issues()  # an earlier network blip must not leave the index without issues
+                idx.ensure_vectors(kw.get("progress"))
                 return idx
         return cls.build(spec, **kw)
 
@@ -189,6 +206,16 @@ class RepoIndex:
             for s in self._sym_by_name.get(tok.lower(), []):
                 for c in self.chunks_for(s.path, s.line, s.line):
                     scores[c.id] = scores.get(c.id, 0.0) + 5.0
+        if self.vectors is not None and len(self.vectors) == len(self.chunks):
+            # hybrid: reciprocal rank fusion of BM25 and vector rankings (robust to score scales)
+            from . import vectors as vec_mod
+            bm_rank = sorted(scores.items(), key=lambda kv: -kv[1])[:200]
+            fused: dict[int, float] = {}
+            for r, (cid, _) in enumerate(bm_rank):
+                fused[cid] = fused.get(cid, 0.0) + 1.0 / (60 + r)
+            for r, (cid, _) in enumerate(vec_mod.query(self.vectors, query, k=200)):
+                fused[cid] = fused.get(cid, 0.0) + 1.0 / (60 + r)
+            scores = {cid: v * 1000 for cid, v in fused.items()}
         hits = []
         for cid, sc in scores.items():
             c = self.chunks[cid]

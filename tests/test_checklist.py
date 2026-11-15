@@ -279,3 +279,16 @@ def test_malformed_model_output_never_crashes(demo_index):
         def create(self, **kw):
             raise RuntimeError("unexpected client failure")
     assert RepoAgent(demo_index, LLM(client=Boom())).ask("q").error
+
+
+def test_hybrid_search_fuses_vector_ranking(demo_index, monkeypatch):
+    import numpy as np
+    from repo_agent import vectors as vec_mod
+    # fake embeddings: the vector ranking puts demo/cli.py first for any query
+    fake = np.zeros((len(demo_index.chunks), 4), dtype=np.float32)
+    target = [c.id for c in demo_index.chunks if c.path == "demo/cli.py"][0]
+    fake[target, 0] = 1.0
+    monkeypatch.setattr(vec_mod, "query", lambda vecs, text, k=100: [(target, 1.0)])
+    demo_index.vectors = fake
+    hits = demo_index.search("zzz unknown words", k=3)
+    assert hits and hits[0].chunk.path == "demo/cli.py"   # BM25 finds nothing; vectors still help

@@ -30,6 +30,10 @@ tool_timeout_seconds = 20       # таймаут внешних сервисов
 # только если post_to_github = true, задан GITHUB_TOKEN и человек подтвердил.
 post_to_github = false
 
+[search]
+mode = "hybrid"                 # hybrid = BM25 + векторный поиск (RRF) | bm25
+embedding_model = "BAAI/bge-small-en-v1.5"   # локальная модель эмбеддингов (fastembed/ONNX, ~67 МБ, CPU)
+
 [demo]
 # Симуляция сбоя для демо: "<инструмент>:<timeout|error>", срабатывает на первом вызове.
 # Например: fault = "read_file:timeout". Пусто — без сбоев.
