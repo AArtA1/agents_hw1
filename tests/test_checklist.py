@@ -339,3 +339,11 @@ def test_autofix_proposes_diff_and_applies_on_new_branch_only(demo_index):
                                                     "replacement": "    if x >>> hi:", "explanation": "bad"}))])
     with pytest.raises(FixError):                                               # broken syntax is refused
         propose_fix(demo_index, LLM(client=client), finding)
+
+
+def test_reviewer_accepts_array_without_path_for_single_file(demo_index):
+    import json as _json
+    from repo_agent.review.llm_review import LLMReviewer
+    client, _ = fake_client([text_resp("```json\n" + _json.dumps([{"line": 7, "title": "bound"}]) + "\n```")])
+    out = LLMReviewer(LLM(client=client)).review_items([{"path": "demo/util.py", "kind": "file", "view": "    7 | x"}])
+    assert [(f.path, f.line, f.severity, f.category) for f in out] == [("demo/util.py", 7, "medium", "bug")]

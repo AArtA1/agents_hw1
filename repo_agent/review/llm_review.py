@@ -145,7 +145,9 @@ class LLMReviewer:
                 data = {"findings": []}
             valid_paths = {it["path"] for it in batch}
             for f in data.get("findings", []):
-                if not isinstance(f, dict) or not isinstance(f.get("path"), str) or "line" not in f:
+                if isinstance(f, dict) and "path" not in f and len(batch) == 1:
+                    f["path"] = batch[0]["path"]  # non-strict providers omit the path for a single file
+                if not isinstance(f, dict) or not isinstance(f.get("path"), str) or not isinstance(f.get("line"), int):
                     continue  # malformed item from a non-strict provider
                 path = f["path"] if f["path"] in valid_paths else _match_path(f["path"], valid_paths)
                 if not path:
