@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -15,7 +16,7 @@ from . import config
 from .citations import Citation, cited_files, extract
 from .index import RepoIndex
 from .llm import LLM, LLMError
-from .tools import MAX_READ_LINES, TOOL_BY_NAME, TOOLS, RepoTools, ToolResult, api_tools, execute_action, preview_action  # noqa: F401
+from .tools import MAX_READ_LINES, TOOL_BY_NAME, TOOLS, RepoTools, ToolResult, api_tools, execute_action, preview_action, truncate  # noqa: F401
 
 # Confirmation callback: (tool name, args, human-readable preview) -> approved?
 Confirm = Callable[[str, dict, str], bool]
@@ -25,8 +26,11 @@ HISTORY_BUDGET_CHARS = 400_000  # ~100k tokens of history before the chat is com
 def _safe_json(raw) -> dict | str:
     try:
         return json.loads(raw or "{}")
-    except (TypeError, ValueError):
-        return str(raw)
+    except (TypeError, ValueError, RecursionError):
+        return str(raw)[:2000]
+
+
+MAX_CALLS_PER_STEP = 8  # tool_use blocks executed per model response; the rest get an error result
 
 
 def _history_chars(messages: list) -> int:
@@ -128,6 +132,7 @@ class RepoAgent:
         # actions are queued in self.pending and executed only via approve_pending().
         self.confirm = confirm
         self.pending: list[PendingAction] = []
+        self._lock = threading.Lock()
         self.effort = effort or config.CHAT_EFFORT
         if summary_md is None:
             from .summary import build_summary, summary_markdown
@@ -139,6 +144,9 @@ class RepoAgent:
     def reset(self) -> None:
         self.history = []
         self.turns = []
+        for a in self.pending:  # a new conversation must not keep old actions approvable
+            if a.status == "pending":
+                a.status, a.result = "rejected", "Отменено: начат новый диалог."
 
     def _recap(self) -> str:
         recent = self.turns[-4:]
@@ -190,15 +198,29 @@ class RepoAgent:
                     final_text = "Ответ не поместился в лимит токенов — переформулируйте вопрос уже."
                 break
             results = []
-            for tu in tool_uses:
-                args = tu.input if isinstance(tu.input, dict) else _safe_json(tu.input)
-                res = self._dispatch(tu.name, args)
-                step = Step(tu.name, args if isinstance(args, dict) else {"raw": str(args)}, res.content[:400],
-                            res.files, res.is_error, res.status)
+            for n_call, tu in enumerate(tool_uses):
+                tu_id = getattr(tu, "id", None) or f"missing_id_{n_call}"
+                name = getattr(tu, "name", None)
+                raw_in = getattr(tu, "input", None)
+                args = raw_in if isinstance(raw_in, dict) else _safe_json(raw_in)
+                if last:
+                    res = ToolResult("Лимит шагов исчерпан: инструменты больше не выполняются.", "error")
+                elif n_call >= MAX_CALLS_PER_STEP:
+                    res = ToolResult(f"Слишком много вызовов за один шаг (максимум {MAX_CALLS_PER_STEP}); "
+                                     f"этот вызов не выполнен.", "error")
+                else:
+                    try:
+                        res = self._dispatch(name, args)
+                    except Exception as e:  # last line of defence: a tool bug must not kill the loop
+                        res = ToolResult(f"Внутренняя ошибка: {type(e).__name__}: {e}", "error")
+                res.content = truncate(res.content)[0]
+                name = name if isinstance(name, str) else repr(name)[:100]
+                step = Step(name[:100], args if isinstance(args, dict) else {"raw": str(args)[:200]},
+                            res.content[:400], res.files, res.is_error, res.status)
                 steps.append(step)
                 if on_step:
                     on_step(step)
-                results.append({"type": "tool_result", "tool_use_id": tu.id, "content": res.content,
+                results.append({"type": "tool_result", "tool_use_id": tu_id, "content": res.content,
                                 **({"is_error": True} if res.is_error else {})})
             if step_no + 1 == self.max_steps:
                 results.append({"type": "text", "text": "Лимит шагов исчерпан. Дай финальный ответ сейчас "
@@ -210,8 +232,12 @@ class RepoAgent:
         return Answer(question, final_text, cites, steps, "agent")
 
     # ------------------------------------------------------------- tools & actions
-    def _dispatch(self, name: str, args) -> ToolResult:
-        spec = TOOL_BY_NAME.get(name, {}).get("spec", {})
+    def _dispatch(self, name, args) -> ToolResult:
+        if not isinstance(name, str) or name not in TOOL_BY_NAME:
+            shown = name[:100] if isinstance(name, str) else type(name).__name__
+            return ToolResult(f"Ошибка: инструмента '{shown}' нет. Доступны: {', '.join(TOOL_BY_NAME)}.",
+                              "unknown_tool")
+        spec = TOOL_BY_NAME[name].get("spec", {})
         if spec.get("kind") != "action":
             return self.tools.call(name, args)
         # action: validate first, then a human decides; nothing runs without approval
@@ -219,10 +245,10 @@ class RepoAgent:
         problems = validate_args(TOOL_BY_NAME[name]["input_schema"], args)
         if problems:
             return ToolResult(f"Ошибка аргументов {name}: " + "; ".join(problems), "invalid_args")
-        preview = preview_action(name, args)
+        preview = preview_action(name, args, self.idx)
         if self.confirm is not None:
             try:
-                approved = bool(self.confirm(name, args, preview))
+                approved = self.confirm(name, args, preview) is True  # only an explicit True approves
             except Exception:
                 approved = False
             if not approved:
@@ -238,12 +264,14 @@ class RepoAgent:
 
     def resolve_pending(self, action_id: int, approve: bool) -> str:
         """Called by the UI when the human clicks Approve/Reject."""
-        act = next((a for a in self.pending if a.id == action_id), None)
-        if act is None or act.status != "pending":
-            return "Действие не найдено или уже обработано."
-        if not approve:
-            act.status, act.result = "rejected", "Отклонено человеком; ничего не выполнено."
-            return act.result
+        with self._lock:  # a double click must not execute the action twice
+            act = next((a for a in self.pending if a.id == action_id), None)
+            if act is None or act.status != "pending":
+                return "Действие не найдено или уже обработано."
+            if approve is not True:
+                act.status, act.result = "rejected", "Отклонено человеком; ничего не выполнено."
+                return act.result
+            act.status = "running"
         res = execute_action(self.idx, act.tool, act.args)
         act.status, act.result = "approved", res.content
         return res.content

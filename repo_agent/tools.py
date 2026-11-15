@@ -103,8 +103,10 @@ TOOLS: list[dict] = [
     },
     {
         "name": "list_dir",
-        "description": "Показать файлы и подкаталоги каталога репозитория ('' или '.' — корень). Нужен, чтобы "
-                       "понять структуру проекта или найти точный путь.",
+        "description": "Показать файлы и подкаталоги одного каталога репозитория ('' или '.' — корень; подкаталоги "
+                       "оканчиваются на '/'). Используй, чтобы понять структуру проекта или уточнить путь, когда "
+                       "read_file ответил «не найден». Показывает только проиндексированные (текстовые) файлы. "
+                       "Если каталога нет — так и скажет.",
         "input_schema": _obj({"path": {"type": "string", "maxLength": 400}}, ["path"]),
         "spec": {"kind": "read", "service": "локальный индекс"},
     },
@@ -122,40 +124,52 @@ TOOLS: list[dict] = [
     },
     {
         "name": "show_commit",
-        "description": "Сообщение и diff одного коммита по SHA (минимум 4 hex-символа). Diff обрезается.",
+        "description": "Показать один коммит: автора, дату, сообщение, список файлов и diff. Используй после "
+                       "git_history или blame, чтобы понять, ЧТО и ЗАЧЕМ изменили. sha — минимум 4 шестнадцатеричных "
+                       "символа (например '6f205ff4'). Большой diff обрезается до лимита результата. Ошибка, если "
+                       "коммит не найден (в неглубоком клоне старых коммитов может не быть) или git не ответил вовремя.",
         "input_schema": _obj({"sha": {"type": "string", "pattern": "^[0-9a-fA-F]{4,40}$"}}, ["sha"]),
         "spec": {"kind": "read", "service": "git"},
     },
     {
         "name": "blame",
-        "description": "git blame для диапазона строк (не больше 80): коммит, автор и дата каждой строки.",
+        "description": "Кто и в каком коммите последним менял строки файла: для каждой строки — коммит, автор, "
+                       "дата и текст. Используй для вопросов «кто/когда изменил эту логику», затем show_commit по "
+                       "найденному sha. Не больше 80 строк за вызов (лишние отбрасываются). Ошибка, если файла нет "
+                       "в индексе, end_line < start_line, строки за концом файла или git не ответил вовремя.",
         "input_schema": _obj({"path": PATH, "start_line": {"type": "integer", "minimum": 1},
                               "end_line": {"type": "integer", "minimum": 1}}, ["path", "start_line", "end_line"]),
         "spec": {"kind": "read", "service": "git"},
     },
     {
         "name": "search_issues",
-        "description": "Поиск по issues и pull requests репозитория на GitHub (заголовок + описание): известные "
-                       "баги, обсуждения, мотивация изменений. Возвращает '#номер [тип, статус] заголовок'.",
+        "description": "Поиск по последним 200 issues и pull requests репозитория на GitHub (заголовок + описание; "
+                       "загружены при индексации): известные баги, обсуждения, мотивация изменений. Запрос — ключевые "
+                       "слова. Возвращает '#номер [issue|PR, open|closed] заголовок' и начало описания; полный текст и "
+                       "обсуждение — get_issue. Если issues не загрузились (нет сети, лимит GitHub API), так и скажет.",
         "input_schema": _obj({"query": {"type": "string", "minLength": 2, "maxLength": 300},
                               "k": {"type": "integer", "minimum": 1, "maximum": 20}}, ["query"]),
         "spec": {"kind": "read", "service": "локальный кэш issues"},
     },
     {
         "name": "get_issue",
-        "description": "Issue или PR по номеру с описанием и обсуждением (запрос к GitHub API, может не ответить "
-                       "вовремя — тогда повтори позже или обойдись без него).",
+        "description": "Полный текст issue или PR по номеру (#N) с обсуждением (до 20 комментариев). Используй, когда "
+                       "номер упомянут в коммите (например 'Fixes #7205') или найден через search_issues. Делает запрос "
+                       "к GitHub API: может вернуть таймаут или «лимит API исчерпан» — тогда продолжи без него и скажи "
+                       "пользователю, что обсуждение проверить не удалось.",
         "input_schema": _obj({"number": {"type": "integer", "minimum": 1}}, ["number"]),
         "spec": {"kind": "read", "service": "GitHub API"},
     },
     {
         "name": "create_issue",
         "description": (
-            "ДЕЙСТВИЕ: подготовить issue о найденной проблеме (баг, уязвимость) в этом репозитории. "
-            "Вызывай, только если пользователь прямо попросил оформить issue. Действие НЕ выполняется сразу: "
-            "его подтверждает человек. Результат — 'ожидает подтверждения', 'отклонено человеком' или "
-            "путь/ссылка созданного issue. Никогда не говори, что issue создан, пока не получил такой результат. "
-            "В body укажи файл и строки ('путь:начало-конец'), шаги воспроизведения и ожидаемое поведение."),
+            "ДЕЙСТВИЕ: оформить issue о найденной проблеме (баг, уязвимость) в ЭТОМ репозитории. Вызывай, только "
+            "если пользователь прямо попросил оформить issue. Действие НЕ выполняется сразу: человек видит "
+            "предпросмотр и подтверждает или отклоняет. Куда пишется: по умолчанию — локальный черновик "
+            "(workspace/<repo>/issue_drafts/*.md); публично на GitHub — только если это включено в конфиге и есть "
+            "токен. Результат — 'ожидает подтверждения', 'отклонено человеком' или путь/ссылка созданного issue. "
+            "Никогда не говори, что issue создан, пока не получил такой результат. В body укажи файл и строки "
+            "('путь:начало-конец'), шаги воспроизведения и ожидаемое поведение."),
         "input_schema": _obj({
             "title": {"type": "string", "minLength": 5, "maxLength": 120},
             "body": {"type": "string", "minLength": 20, "maxLength": 8000},
@@ -180,6 +194,13 @@ _TYPES = {"string": str, "integer": int, "boolean": bool, "array": list, "object
 
 def validate_args(schema: dict, args) -> list[str]:
     """Minimal JSON-schema check for our tool schemas. Returns human-readable problems (empty = valid)."""
+    try:
+        return _validate(schema, args)
+    except (RecursionError, TypeError, ValueError) as e:
+        return [f"аргументы не удалось разобрать: {type(e).__name__}"]
+
+
+def _validate(schema: dict, args) -> list[str]:
     if not isinstance(args, dict):
         return [f"аргументы должны быть объектом JSON, получено {type(args).__name__}"]
     errs = []
@@ -206,6 +227,8 @@ def validate_args(schema: dict, args) -> list[str]:
             if "maximum" in p and v > p["maximum"]:
                 errs.append(f"поле '{k}' должно быть <= {p['maximum']}, получено {v}")
         if t == "string":
+            if any(ord(c) < 32 and c not in "\n\t" for c in v):
+                errs.append(f"поле '{k}' содержит управляющие символы")
             if len(v) < p.get("minLength", 0):
                 errs.append(f"поле '{k}' короче {p['minLength']} символов")
             if "maxLength" in p and len(v) > p["maxLength"]:
@@ -218,6 +241,8 @@ def validate_args(schema: dict, args) -> list[str]:
             it = p.get("items", {}).get("type")
             if it and not all(isinstance(x, _TYPES[it]) for x in v):
                 errs.append(f"элементы поля '{k}' должны быть {it}")
+            elif "maxLength" in p.get("items", {}) and any(len(x) > p["items"]["maxLength"] for x in v):
+                errs.append(f"элементы поля '{k}' длиннее {p['items']['maxLength']} символов")
     return errs
 
 
@@ -340,9 +365,10 @@ class RepoTools:
                          for s in syms), []
 
     def t_grep(self, pattern: str, path_prefix: str | None = None, max_results: int = 40):
+        import regex  # like `re`, but a search can be interrupted by a timeout (catastrophic patterns)
         try:
-            rx = re.compile(pattern)
-        except re.error as e:
+            rx = regex.compile(pattern)
+        except regex.error as e:
             raise ToolError(f"некорректное регулярное выражение: {e}")
         prefix = _norm_rel(path_prefix) if path_prefix else None
         deadline = time.monotonic() + config.TOOL_TIMEOUT
@@ -355,7 +381,17 @@ class RepoTools:
                     raise ServiceTimeout(f"grep: поиск не уложился в {config.TOOL_TIMEOUT:.0f} с")
                 return "\n".join(out) + "\n... (поиск прерван по времени — результат неполный)", []
             for i, line in enumerate(split_lines(repo_mod.read_text(self.idx.root, f) or ""), 1):
-                if rx.search(line):
+                left = deadline - time.monotonic()
+                try:
+                    hit = left > 0 and rx.search(line[:2000], timeout=left)
+                except TimeoutError:
+                    hit, left = None, 0
+                if left <= 0:
+                    if not out:
+                        raise ServiceTimeout(f"grep: шаблон слишком тяжёлый, поиск не уложился в "
+                                             f"{config.TOOL_TIMEOUT:.0f} с — упрости регулярное выражение")
+                    return "\n".join(out) + "\n... (поиск прерван по времени — результат неполный)", []
+                if hit:
                     out.append(f"{f}:{i}: {line.strip()[:200]}")
                     if len(out) >= max_results:
                         return "\n".join(out) + "\n... (есть ещё совпадения)", []
@@ -407,7 +443,7 @@ class RepoTools:
         if end_line < start_line:
             raise ToolError(f"некорректный диапазон строк {start_line}-{end_line}.")
         try:
-            out = repo_mod.blame(self.idx.root, rel, start_line, min(end_line, start_line + 80),
+            out = repo_mod.blame(self.idx.root, rel, start_line, min(end_line, start_line + 79),
                                  timeout=config.TOOL_TIMEOUT)
         except repo_mod.GitTimeout as e:
             raise ServiceTimeout(str(e))
@@ -429,7 +465,7 @@ class RepoTools:
     def t_get_issue(self, number: int):
         try:
             return format_issue(get_issue(self.idx.slug, self.idx.meta.get("web_url"), number,
-                                          timeout=config.TOOL_TIMEOUT)), []
+                                          timeout=config.TOOL_TIMEOUT, attempts=1)), []
         except IssuesError as e:
             if "недоступен" in str(e) or "timed out" in str(e).lower():
                 raise ServiceTimeout(f"GitHub API: {e}")
@@ -438,23 +474,46 @@ class RepoTools:
 
 # ------------------------------------------------------------------------------------- actions
 
-def preview_action(name: str, args: dict) -> str:
+def _visible(text: str) -> str:
+    """Show control/escape characters instead of letting them hide text in the confirmation preview."""
+    return "".join(c if (c in "\n\t" or (ord(c) >= 32 and ord(c) != 127)) else f"\\x{ord(c):02x}" for c in text)
+
+
+def action_target(idx: RepoIndex) -> str:
+    on = owner_name(idx.meta.get("web_url"))
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if config.POST_ISSUES_TO_GITHUB and token and on:
+        return f"ПУБЛИЧНО на GitHub: github.com/{on[0]}/{on[1]}/issues (от вашего имени)"
+    return f"локальный черновик: {config.WORKSPACE / idx.slug / 'issue_drafts'}"
+
+
+def preview_action(name: str, args: dict, idx: RepoIndex | None = None) -> str:
+    target = f"Куда: {action_target(idx)}\n" if idx is not None else ""
     if name == "create_issue":
         labels = f"\nМетки: {', '.join(args.get('labels') or [])}" if args.get("labels") else ""
-        return f"Создать issue: «{args['title']}»{labels}\n\n{args['body']}"
-    return json.dumps(args, ensure_ascii=False, indent=2)
+        return _visible(f"{target}Создать issue: «{args['title']}»{labels}\n\n{args['body']}")
+    return _visible(target + json.dumps(args, ensure_ascii=False, indent=2))
 
 
 def execute_action(idx: RepoIndex, name: str, args: dict) -> ToolResult:
-    """Run a side-effecting tool. Called ONLY after a human approved it."""
+    """Run a side-effecting tool. Called ONLY after a human approved it. Never raises."""
+    try:
+        return _execute_action(idx, name, args)
+    except Exception as e:
+        return ToolResult(f"Ошибка при выполнении действия {name}: {type(e).__name__}: {e}", "error")
+
+
+def _execute_action(idx: RepoIndex, name: str, args: dict) -> ToolResult:
     if name != "create_issue":
         return ToolResult(f"Ошибка: неизвестное действие {name}", "error")
     drafts = config.WORKSPACE / idx.slug / "issue_drafts"
     drafts.mkdir(parents=True, exist_ok=True)
     slug = re.sub(r"[^\w-]+", "-", args["title"].lower()).strip("-")[:40] or "issue"
-    path = drafts / f"{time.strftime('%Y%m%d-%H%M%S')}-{slug}.md"
+    import uuid
+    path = drafts / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}-{slug}.md"
     labels = args.get("labels") or []
-    path.write_text(f"# {args['title']}\n\n{args['body']}\n" + (f"\nLabels: {', '.join(labels)}\n" if labels else ""))
+    with path.open("x", encoding="utf-8") as fh:  # exclusive: never overwrite another draft
+        fh.write(f"# {args['title']}\n\n{args['body']}\n" + (f"\nLabels: {', '.join(labels)}\n" if labels else ""))
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     on = owner_name(idx.meta.get("web_url"))
     if config.POST_ISSUES_TO_GITHUB and token and on:

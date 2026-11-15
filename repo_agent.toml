@@ -4,8 +4,14 @@
 # например REPO_AGENT_LLM_MODEL=claude-sonnet-5-5.
 
 [llm]
-provider = "anthropic"          # поддерживается: anthropic
-model = "claude-opus-5-5"
+# Провайдер: "openai_compatible" (любой OpenAI-совместимый Chat Completions API) или "anthropic".
+provider = "openai_compatible"
+base_url = "https://api.silkcompute.com/v1"   # Silk Compute
+api_key_env = "SILK_API_KEY"                  # имя переменной окружения с ключом (сам ключ — не здесь)
+model = "kimi-k3.1-pro"                       # также: deepseek-v4.1-flash-1017, glm-5.3-flash
+# Вариант с Claude:
+# provider = "anthropic"
+# model = "claude-opus-5-5"                   # ключ: ANTHROPIC_API_KEY
 chat_effort = "medium"          # low | medium | high | xhigh | max
 review_effort = "high"
 timeout_seconds = 120           # таймаут одного запроса к модели

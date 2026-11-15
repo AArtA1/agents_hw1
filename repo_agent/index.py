@@ -163,9 +163,13 @@ class RepoIndex:
         _, slug = repo_mod.parse_repo_spec(spec)
         if not rebuild:
             try:
-                return cls.load(slug)
+                idx = cls.load(slug)
             except FileNotFoundError:
                 pass
+            else:
+                if kw.get("with_issues", True) and not idx.issues and idx.meta.get("web_url"):
+                    idx.refresh_issues()  # an earlier network blip must not leave the index without issues
+                return idx
         return cls.build(spec, **kw)
 
     @staticmethod
@@ -209,6 +213,17 @@ class RepoIndex:
     def search_commits(self, query: str, k: int = 8) -> list[repo_mod.Commit]:
         scores = self._commit_bm25.scores(tokenize(query))
         return [self.commits[i] for i, _ in sorted(scores.items(), key=lambda kv: -kv[1])[:k]]
+
+    def refresh_issues(self) -> bool:
+        try:
+            self.issues = issues_mod.fetch_issues(self.slug, self.meta.get("web_url"))
+        except issues_mod.IssuesError as e:
+            self.meta["issues_error"] = str(e)
+            return False
+        self._issue_bm25 = BM25([tokenize(f"{i['title']} {i['title']} {i['body']}") for i in self.issues])
+        self.meta.update(n_issues=len(self.issues), issues_error=None)
+        (self.index_dir(self.slug) / "meta.json").write_text(json.dumps(self.meta, ensure_ascii=False, indent=2))
+        return True
 
     def search_issues(self, query: str, k: int = 8) -> list[dict]:
         scores = self._issue_bm25.scores(tokenize(query))

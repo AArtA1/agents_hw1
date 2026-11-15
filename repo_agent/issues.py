@@ -28,7 +28,20 @@ def owner_name(web_url: str | None) -> tuple[str, str] | None:
     return (m.group(1), m.group(2)) if m else None
 
 
-def _get(url: str, timeout: int = 20):
+def _get(url: str, timeout: float = 20, attempts: int = 3):
+    """GET JSON with a couple of retries on transient network errors (not on 4xx)."""
+    import time as _time
+    for i in range(attempts):
+        try:
+            return _get_once(url, timeout)
+        except IssuesError as e:
+            transient = "недоступен" in str(e) or "HTTP 5" in str(e)
+            if not transient or i == attempts - 1:
+                raise
+            _time.sleep(0.5 * (i + 1))
+
+
+def _get_once(url: str, timeout: float = 20):
     headers = {"Accept": "application/vnd.github+json", "User-Agent": "repo-agent",
                "X-GitHub-Api-Version": "2022-11-28"}
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
@@ -99,7 +112,8 @@ def load_issues(slug: str) -> list[dict]:
     return json.loads(p.read_text()) if p.exists() else []
 
 
-def get_issue(slug: str, web_url: str | None, number: int, max_comments: int = 20, timeout: float = 20) -> dict:
+def get_issue(slug: str, web_url: str | None, number: int, max_comments: int = 20, timeout: float = 20,
+              attempts: int = 3) -> dict:
     """One issue/PR with its discussion (cached)."""
     cache = config.WORKSPACE / slug / "issues" / f"{number}.json"
     if cache.exists():
@@ -108,11 +122,11 @@ def get_issue(slug: str, web_url: str | None, number: int, max_comments: int = 2
     if not on:
         raise IssuesError("Issues доступны только для репозиториев GitHub.")
     try:
-        it = _slim(_get(f"{API}/repos/{on[0]}/{on[1]}/issues/{number}", timeout=timeout))
+        it = _slim(_get(f"{API}/repos/{on[0]}/{on[1]}/issues/{number}", timeout=timeout, attempts=attempts))
         it["discussion"] = []
         if it["comments"]:
             for c in _get(f"{API}/repos/{on[0]}/{on[1]}/issues/{number}/comments?per_page={max_comments}",
-                          timeout=timeout):
+                          timeout=timeout, attempts=attempts):
                 it["discussion"].append({"author": (c.get("user") or {}).get("login"),
                                          "role": c.get("author_association"),
                                          "body": (c.get("body") or "")[:2000]})

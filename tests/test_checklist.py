@@ -169,7 +169,13 @@ def test_provider_and_model_come_from_config(tmp_path, monkeypatch):
     with pytest.raises(config.ConfigError):
         config.load_settings(cfg)
     real = config.load_settings(ROOT / "repo_agent.toml")
-    assert real["llm"]["provider"] == "anthropic" and real["llm"]["model"]
+    assert real["llm"]["provider"] in config.SUPPORTED_PROVIDERS and real["llm"]["model"]
+    cfg.write_text('[llm]\nprovider = "openai_compatible"\nmodel = "m"\n')
+    with pytest.raises(config.ConfigError):  # base_url / api_key_env required
+        config.load_settings(cfg)
+    cfg.write_text('[actions]\npost_to_github = "false"\n')
+    with pytest.raises(config.ConfigError):  # wrong type is an error, not silently truthy
+        config.load_settings(cfg)
 
 
 def test_no_secrets_in_repository():
@@ -179,3 +185,97 @@ def test_no_secrets_in_repository():
     leaks = [f for f in tracked if (ROOT / f).is_file() and pat.search((ROOT / f).read_text(errors="ignore"))]
     assert leaks == []
     assert ".env" in (ROOT / ".gitignore").read_text().split()
+
+
+# ---------------------------------------------------------------- red-team regressions
+
+def test_openai_compatible_adapter_roundtrip():
+    from types import SimpleNamespace
+    from repo_agent.openai_compat import from_openai_response, to_openai_messages, to_openai_tools
+    msgs = [{"role": "user", "content": "q"},
+            {"role": "assistant", "content": [SimpleNamespace(type="text", text="look"),
+                                              SimpleNamespace(type="tool_use", id="c1", name="read_file",
+                                                              input={"path": "a.py"})]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c1", "content": "boom",
+                                          "is_error": True}]}]
+    out = to_openai_messages(msgs, system="sys")
+    assert [m["role"] for m in out] == ["system", "user", "assistant", "tool"]
+    assert out[2]["tool_calls"][0]["function"]["name"] == "read_file" and out[3]["content"].startswith("[TOOL ERROR]")
+    assert to_openai_tools([{"name": "t", "description": "d", "input_schema": {"type": "object"}}])[0]["type"] == "function"
+    r = from_openai_response({"choices": [{"finish_reason": "tool_calls", "message": {"content": None, "tool_calls": [
+        {"id": "x", "function": {"name": "grep", "arguments": "{bad json"}}]}}]})
+    assert r.stop_reason == "tool_use" and r.content[0].input == "{bad json"
+
+
+def test_symlink_outside_repo_is_not_indexed_or_read(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setattr(config, "WORKSPACE", tmp_path / "ws")
+    r = tmp_path / "r"
+    r.mkdir()
+    (r / "a.py").write_text("x = 1\n")
+    secret = tmp_path / "secret.env"
+    secret.write_text("TOKEN=ghp_" + "a" * 36 + "\n")
+    os.symlink(secret, r / "config.env")
+    for a in (["init", "-q"], ["add", "."], ["-c", "user.email=a@a", "-c", "user.name=a", "commit", "-qm", "x"]):
+        subprocess.run(["git", "-C", str(r), *a], check=True)
+    from repo_agent.index import RepoIndex
+    idx = RepoIndex.build(str(r), with_issues=False)
+    assert idx.files == ["a.py"]
+    assert RepoTools(idx).call("read_file", {"path": "config.env"}).status == "error"
+    assert repo_mod.read_text(r, "config.env") is None
+
+
+def test_grep_catastrophic_regex_is_bounded(demo_index, monkeypatch):
+    import time
+    monkeypatch.setattr(config, "TOOL_TIMEOUT", 1.0)
+    (demo_index.root / "demo" / "core.py").write_text("a" * 60 + "b\n")
+    t0 = time.time()
+    res = RepoTools(demo_index).call("grep", {"pattern": "^(a|aa)+$"})
+    assert time.time() - t0 < 5 and res.status in ("timeout", "ok")
+
+
+def test_confirmation_requires_explicit_true_and_runs_once(demo_index):
+    import threading
+    client, _ = fake_client([tool_resp(("create_issue", ISSUE)), text_resp("ok")])
+    ans = RepoAgent(demo_index, LLM(client=client), confirm=lambda *a: "n").ask("x")
+    assert ans.steps[0].status == "rejected"                        # truthy "n" is NOT approval
+    client, _ = fake_client([tool_resp(("create_issue", ISSUE)), text_resp("ok")])
+    agent = RepoAgent(demo_index, LLM(client=client))
+    agent.ask("x")
+    threads = [threading.Thread(target=agent.resolve_pending, args=(1, True)) for _ in range(5)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    drafts = config.WORKSPACE / demo_index.slug / "issue_drafts"
+    assert len(list(drafts.glob("*.md"))) == 1                       # double click -> one execution
+
+
+def test_preview_shows_hidden_control_chars_and_target(demo_index):
+    from repo_agent.tools import preview_action, validate_args, TOOL_BY_NAME
+    body = "visible \x1b[8mhidden secret\x1b[0m text that is long enough"
+    p = preview_action("create_issue", {"title": "t" * 6, "body": body}, demo_index)
+    assert "\x1b" not in p and "\\x1b" in p and "Куда:" in p
+    assert validate_args(TOOL_BY_NAME["create_issue"]["input_schema"], {"title": "t" * 6, "body": body})
+    assert validate_args(TOOL_BY_NAME["create_issue"]["input_schema"],
+                         {"title": "t" * 6, "body": "b" * 30, "labels": ["x" * 60]})
+
+
+def test_malformed_model_output_never_crashes(demo_index):
+    from types import SimpleNamespace
+    weird = SimpleNamespace(content=[SimpleNamespace(type="tool_use", id=None, name=["x"], input="[" * 5000),
+                                     *[SimpleNamespace(type="tool_use", id=f"i{i}", name="list_dir", input={"path": ""})
+                                       for i in range(20)]],
+                            stop_reason="tool_use", usage=None)
+    client, _ = fake_client([weird, text_resp("done")])
+    ans = RepoAgent(demo_index, LLM(client=client)).ask("q")
+    assert ans.steps[0].status == "unknown_tool"
+    assert sum(1 for s in ans.steps if s.status == "ok") == 7            # 8 per step: 1 bad + 7 executed
+    assert all(len(s.output_preview) <= 400 for s in ans.steps)
+
+    class Boom:
+        def __init__(self):
+            self.beta = self
+            self.messages = self
+
+        def create(self, **kw):
+            raise RuntimeError("unexpected client failure")
+    assert RepoAgent(demo_index, LLM(client=Boom())).ask("q").error

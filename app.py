@@ -17,6 +17,9 @@ from repo_agent.report import MERMAID_CDN, latest_eval
 from repo_agent.summary import build_summary, narrative, summary_markdown
 
 st.set_page_config(page_title="Repo Agent", page_icon="🧭", layout="wide")
+if config.CONFIG_ERROR:
+    st.error(f"Ошибка конфигурации: {config.CONFIG_ERROR}")
+    st.stop()
 
 
 # ------------------------------------------------------------------ caching
@@ -111,11 +114,11 @@ with st.sidebar:
 
     st.divider()
     creds = has_credentials()
-    model = st.text_input("Модель Claude", value=config.MODEL)
-    use_llm = st.toggle("Использовать Claude", value=creds, disabled=not creds,
-                        help=None if creds else "Задайте ANTHROPIC_API_KEY, чтобы включить LLM")
+    model = st.text_input(f"Модель ({config.PROVIDER})", value=config.MODEL)
+    use_llm = st.toggle("Использовать LLM", value=creds, disabled=not creds,
+                        help=None if creds else f"Задайте {config.API_KEY_ENV}, чтобы включить LLM")
     if not creds:
-        st.caption("⚠ ANTHROPIC_API_KEY не найден: чат работает в режиме поиска, ревью — только статический анализ.")
+        st.caption(f"⚠ {config.API_KEY_ENV} не найден: чат работает в режиме поиска, ревью — только статический анализ.")
     st.caption(f"Провайдер: {config.PROVIDER} · лимит шагов: {config.MAX_STEPS} · "
                f"таймаут инструментов: {config.TOOL_TIMEOUT:.0f} с (repo_agent.toml)")
     fault = st.selectbox("Демо: симулировать сбой инструмента", ["нет", "read_file:timeout", "search_code:timeout",
@@ -351,7 +354,7 @@ with tab_eval:
         qa_limit = st.number_input("Вопросов", 1, 200, 10, key="qa_limit")
         if split and st.button("Запустить QA-оценку"):
             if qa_mode == "agent" and not llm:
-                st.error("Нужен Claude (ANTHROPIC_API_KEY).")
+                st.error(f"Нужен ключ LLM ({config.API_KEY_ENV}).")
             else:
                 bar = st.progress(0.0)
                 res = qa_eval.evaluate(idx, qa_eval.load_sweqa(split), mode=qa_mode, llm=llm, limit=int(qa_limit),

@@ -25,6 +25,8 @@ class LLMError(RuntimeError):
 
 def has_credentials() -> bool:
     """Best-effort check so the app can degrade to retrieval-only mode instead of crashing."""
+    if config.PROVIDER == "openai_compatible":
+        return bool(os.environ.get(config.API_KEY_ENV))
     if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
         return True
     if os.environ.get("ANTHROPIC_PROFILE") or os.environ.get("ANTHROPIC_IDENTITY_TOKEN_FILE"):
@@ -35,7 +37,15 @@ def has_credentials() -> bool:
 class LLM:
     def __init__(self, model: str | None = None, client: Any = None):
         self.model = model or config.MODEL
-        if client is None:
+        self.provider = config.PROVIDER if client is None else getattr(client, "provider", "anthropic")
+        if client is None and config.PROVIDER == "openai_compatible":
+            from .openai_compat import OpenAICompatClient
+            key = os.environ.get(config.API_KEY_ENV, "")
+            if not key:
+                raise LLMError(f"Не задан ключ провайдера: переменная окружения {config.API_KEY_ENV}.")
+            client = OpenAICompatClient(config.BASE_URL, key, timeout=config.LLM_TIMEOUT,
+                                        max_retries=config.LLM_MAX_RETRIES)
+        elif client is None:
             import anthropic
 
             client = anthropic.Anthropic(timeout=config.LLM_TIMEOUT, max_retries=config.LLM_MAX_RETRIES)
@@ -72,10 +82,20 @@ class LLM:
         return resp
 
     def _call(self, kwargs: dict):
-        import anthropic
-
+        from .openai_compat import ProviderError
         try:
-            return self.client.beta.messages.create(**kwargs)
+            import anthropic
+        except ImportError:  # pragma: no cover
+            anthropic = None
+        try:
+            resp = self.client.beta.messages.create(**kwargs)
+            if getattr(resp, "content", None) is None or getattr(resp, "stop_reason", None) is None:
+                raise LLMError("Некорректный ответ модели (нет content/stop_reason).")
+            return resp
+        except LLMError:
+            raise
+        except ProviderError as e:
+            raise LLMError(f"Провайдер {config.PROVIDER}: {e}") from e
         except anthropic.AuthenticationError as e:
             raise LLMError("Нет доступа к Claude API: задайте ANTHROPIC_API_KEY.") from e
         except anthropic.BadRequestError as e:
@@ -88,6 +108,8 @@ class LLM:
             raise LLMError(f"Claude API не ответил за {config.LLM_TIMEOUT:.0f} с (таймаут).") from e
         except anthropic.APIConnectionError as e:
             raise LLMError("Нет соединения с Claude API.") from e
+        except Exception as e:  # any other client failure must not crash the agent loop
+            raise LLMError(f"Ошибка клиента модели: {type(e).__name__}: {e}") from e
 
     def _track(self, resp) -> None:
         u = getattr(resp, "usage", None)

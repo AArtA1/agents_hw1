@@ -1,6 +1,6 @@
 """Live demo: (1) a normal question, (2) the same question when a tool fails — the agent recovers.
 
-`repo-agent demo psf/requests` uses Claude (needs ANTHROPIC_API_KEY).
+`repo-agent demo psf/requests` uses the provider from repo_agent.toml (needs its API key).
 `repo-agent demo psf/requests --offline` replays a scripted model policy instead of Claude: the agent loop,
 schema validation, error handling, timeouts and output limits are the real ones; only the model's decisions
 are scripted (useful when the network/API is unavailable during the demo).
@@ -72,14 +72,20 @@ def _print_step(s):
 def _scenario(title, idx, llm, fault, question):
     print(f"\n=== {title} ===")
     print(f"Вопрос: {question}" + (f"\n(симулирован сбой: {fault})" if fault else ""))
-    agent = RepoAgent(idx, llm, fault=fault or "", max_steps=config.MAX_STEPS)
+    agent = RepoAgent(idx, llm, fault=fault or "", max_steps=_MAX_STEPS or config.MAX_STEPS)
     ans = agent.ask(question, on_step=_print_step)
     print(f"\nОтвет:\n{ans.text}")
     bad = [c.label for c in ans.citations if not c.valid]
-    print(f"\nСсылки: {len(ans.citations)}, невалидных: {len(bad)}; шагов: {len(ans.steps)} из {agent.max_steps}")
+    print(f"\nСсылки: {len(ans.citations)}, невалидных: {len(bad)}; вызовов инструментов: {len(ans.steps)}; "
+          f"лимит шагов цикла: {agent.max_steps}")
+
+
+_MAX_STEPS: int | None = None
 
 
 def run_demo(args) -> None:
+    global _MAX_STEPS
+    _MAX_STEPS = getattr(args, "max_steps", None)
     idx = RepoIndex.load_or_build(args.repo, depth=getattr(args, "depth", None))
     if args.offline:
         q = "DEFAULT_RETRIES max_retries HTTPAdapter"
@@ -92,6 +98,7 @@ def run_demo(args) -> None:
                   LLM(client=ScriptedModel(q, False)), args.fault, QUESTION)
         return
     if not has_credentials():
-        sys.exit("Нужен ANTHROPIC_API_KEY (или запустите с --offline).")
+        sys.exit(f"Нужен ключ провайдера {config.PROVIDER}: переменная {config.API_KEY_ENV} "
+                 f"(или запустите с --offline).")
     _scenario("Сценарий 1: обычный", idx, LLM(), "", QUESTION)
     _scenario("Сценарий 2: инструмент вернул ошибку", idx, LLM(), args.fault, QUESTION)

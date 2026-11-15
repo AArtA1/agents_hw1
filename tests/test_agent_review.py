@@ -21,7 +21,10 @@ def test_tools(demo_index):
     assert "Fix clamp upper bound" in out
 
 
-def test_agent_loop_with_tools_and_citations(demo_index):
+def test_agent_loop_with_tools_and_citations(demo_index, monkeypatch):
+    from repo_agent import config
+    monkeypatch.setattr(config, "MODEL", "claude-opus-5-5")
+    monkeypatch.setattr(config, "USE_FALLBACKS", True)
     client, msgs = fake_client([
         tool_resp(("search_code", {"query": "clamp"}), ("read_file", {"path": "demo/util.py", "start_line": 4, "end_line": 9})),
         tool_resp(("read_file", {"path": "missing.py"})),

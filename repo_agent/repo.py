@@ -33,6 +33,9 @@ def parse_repo_spec(spec: str) -> tuple[str, str]:
     return f"https://github.com/{owner}/{name}.git", f"{owner}__{name}"
 
 
+CLONE_TIMEOUT = 900  # seconds; large repos: use --depth
+
+
 class GitTimeout(RuntimeError):
     pass
 
@@ -65,7 +68,10 @@ def fetch(spec: str, depth: int | None = None) -> tuple[Path, str]:
     if depth:
         cmd += ["--depth", str(depth)]
     cmd += [url, str(dest)]
-    res = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=CLONE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"git clone не уложился в {CLONE_TIMEOUT} с — попробуйте --depth 200") from None
     if res.returncode != 0:
         raise RuntimeError(f"git clone failed: {res.stderr.strip()}")
     return dest, slug
@@ -97,7 +103,9 @@ def list_files(repo: Path) -> list[str]:
             continue
         full = repo / rel
         try:
-            if not full.is_file() or full.stat().st_size > config.MAX_FILE_BYTES:
+            # symlinks can point outside the clone (e.g. -> ~/.ssh/...): never index them
+            if full.is_symlink() or not _inside(repo, full) or not full.is_file() \
+                    or full.stat().st_size > config.MAX_FILE_BYTES:
                 continue
         except OSError:
             continue
@@ -107,9 +115,19 @@ def list_files(repo: Path) -> list[str]:
     return sorted(out)
 
 
-def read_text(repo: Path, rel: str) -> str | None:
+def _inside(repo: Path, full: Path) -> bool:
     try:
-        data = (repo / rel).read_bytes()
+        return full.resolve().is_relative_to(repo.resolve())
+    except (OSError, RuntimeError):
+        return False
+
+
+def read_text(repo: Path, rel: str) -> str | None:
+    full = repo / rel
+    if full.is_symlink() or not _inside(repo, full):  # no reads outside the repository
+        return None
+    try:
+        data = full.read_bytes()
     except OSError:
         return None
     if b"\x00" in data[:4096]:

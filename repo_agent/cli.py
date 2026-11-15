@@ -32,7 +32,7 @@ def _llm(args) -> LLM | None:
     if getattr(args, "no_llm", False):
         return None
     if not has_credentials():
-        print("⚠ ANTHROPIC_API_KEY не задан — работаю без LLM.", file=sys.stderr)
+        print(f"⚠ {config.API_KEY_ENV} не задан — работаю без LLM.", file=sys.stderr)
         return None
     return LLM(model=getattr(args, "model", None))
 
@@ -92,7 +92,7 @@ def _on_step(s):
 def _confirm_tty(tool: str, args: dict, preview: str) -> bool:
     """Human-in-the-loop for actions: the agent waits for an explicit 'y' in the terminal."""
     print(f"\n⚠️  Агент хочет выполнить действие «{tool}»:\n{'-' * 60}\n{preview}\n{'-' * 60}", file=sys.stderr)
-    if not sys.stdin.isatty():
+    if not sys.stdin.isatty():  # piped input can't be a conscious human decision
         print("Нет интерактивного терминала — действие отклонено.", file=sys.stderr)
         return False
     return input("Выполнить? [y/N] ").strip().lower() in ("y", "yes", "д", "да")
@@ -100,7 +100,11 @@ def _confirm_tty(tool: str, args: dict, preview: str) -> bool:
 
 def _agent(args, idx):
     from .agent import RepoAgent
-    return RepoAgent(idx, _llm(args), max_steps=args.max_steps, confirm=_confirm_tty, fault=args.fault)
+    llm = _llm(args)
+    if args.fault and llm is None:
+        print("⚠ --fault работает только с Claude (в режиме без LLM инструменты не вызываются). "
+              "Без ключа сбой и восстановление показывает: repo-agent demo <repo> --offline", file=sys.stderr)
+    return RepoAgent(idx, llm, max_steps=args.max_steps, confirm=_confirm_tty, fault=args.fault)
 
 
 def cmd_ask(args):
@@ -176,7 +180,7 @@ def cmd_eval_qa(args):
                 args.dataset if args.dataset == "stackrepoqa" else Path(args.dataset).name)
     llm = _llm(args) if args.mode == "agent" else None
     if args.mode == "agent" and llm is None:
-        sys.exit("Режим agent требует ANTHROPIC_API_KEY (или используйте --mode retrieval).")
+        sys.exit(f"Режим agent требует ключ {config.API_KEY_ENV} (или используйте --mode retrieval).")
     res = qa.evaluate(idx, items, mode=args.mode, llm=llm, limit=args.limit, judge=args.judge, dataset=ds_label,
                       progress=lambda i, n, q: print(f"[{i + 1}/{n}] {q[:80]}", file=sys.stderr))
     p = qa.save(res, _out_dir(idx) / "eval")
@@ -283,6 +287,8 @@ def main(argv=None):
     p.add_argument("--llm", action="store_true")
 
     args = ap.parse_args(argv)
+    if config.CONFIG_ERROR:
+        sys.exit(f"Ошибка конфигурации: {config.CONFIG_ERROR}")
     if args.model:
         config.MODEL = args.model
     args.fn(args)
