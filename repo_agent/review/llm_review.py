@@ -139,11 +139,25 @@ class LLMReviewer:
                    "Проведи ревью кода ниже."
             prompt = f"{context}\n\n{task}\n\n" + "\n\n".join(blocks)
             data = self.llm.json(prompt, FINDINGS_SCHEMA, system=REVIEW_SYSTEM, effort=self.effort)
+            if isinstance(data, list):  # some providers return the array itself
+                data = {"findings": data}
+            if not isinstance(data, dict):
+                data = {"findings": []}
             valid_paths = {it["path"] for it in batch}
             for f in data.get("findings", []):
+                if not isinstance(f, dict) or not isinstance(f.get("path"), str) or "line" not in f:
+                    continue  # malformed item from a non-strict provider
                 path = f["path"] if f["path"] in valid_paths else _match_path(f["path"], valid_paths)
                 if not path:
                     continue
+                f.setdefault("severity", "medium")
+                f.setdefault("category", "bug")
+                f.setdefault("title", "")
+                f.setdefault("explanation", "")
+                if f["severity"] not in ("critical", "high", "medium", "low"):
+                    f["severity"] = "medium"
+                if f["category"] not in ("bug", "security", "performance", "maintainability"):
+                    f["category"] = "bug"
                 findings.append(Finding(path, int(f["line"]), f["severity"], f["category"], f["title"],
                                         f["explanation"], f.get("suggestion", ""), "llm", "llm",
                                         float(f.get("confidence", 0.5)), int(f.get("end_line") or f["line"])))

@@ -137,4 +137,25 @@ class LLM:
                            output_format={"type": "json_schema", "schema": schema})
         if resp.stop_reason == "max_tokens":
             raise LLMError("Ответ обрезан по max_tokens — уменьшите объём входа.")
-        return json.loads(self.text_of(resp))
+        return parse_json_loose(self.text_of(resp))
+
+
+def parse_json_loose(text: str):
+    """Strict providers return pure JSON; others may wrap it in ```json fences or add prose around it."""
+    import re
+    t = text.strip()
+    m = re.search(r"```(?:json)?\s*(.*?)```", t, re.S)
+    if m:
+        t = m.group(1).strip()
+    try:
+        return json.loads(t)
+    except ValueError:
+        pass
+    for open_c, close_c in (("{", "}"), ("[", "]")):
+        a, b = t.find(open_c), t.rfind(close_c)
+        if a != -1 and b > a:
+            try:
+                return json.loads(t[a:b + 1])
+            except ValueError:
+                continue
+    raise LLMError(f"Модель вернула не JSON: {t[:200]}")
